@@ -54,10 +54,16 @@ five:   .float  5.0
 PI:     .float  3.141592
 F180:   .float  180.0
 
+.align 2
+tile_data:      .space 1600
+puzzle:         .space 4096
+solution:       .space 328
+
 .text
 main:
 	# go wild
 	# the world is your oyster :)
+        jal     zero_sol
         li      $a0, 0
         li      $a1, 0
         jal     goto_loc
@@ -123,6 +129,22 @@ goto_loc_done:
         lw      $s1, 8($sp)
         add     $sp, $sp, 12
         jr      $ra
+
+# -----------------------------------------------------------------------
+# zero_sol - zeros out the solution data space
+# -----------------------------------------------------------------------
+zero_sol:
+        la      $t0, solution
+        li      $t1, 328
+        add     $t1, $t1, $t0           # Final Address
+zero_sol_loop:
+        bge     $t0, $t1, zero_sol_done
+        sw      $0, 0($t0)
+        add     $t0, $t0, 4
+        j       zero_sol_loop
+zero_sol_done:
+        jr      $ra
+
 
 # -----------------------------------------------------------------------
 # sb_arctan - computes the arctangent of y / x

@@ -69,6 +69,7 @@ main:
         # enable interrupts
         jal     zero_sol
         li      $t0, REQUEST_PUZZLE_INT_MASK
+        or      $t0, $t0, TIMER_MASK
         or      $t0, $t0, 1
         mtc0    $t0, $12
         la      $t0, puzzle
@@ -84,12 +85,15 @@ main:
         li      $a0, 0
         li      $a1, 0
         jal     goto_loc
+        jal     wait_until_at_dest
         li      $a0, 8
         li      $a1, 0
         jal     goto_loc
+        jal     wait_until_at_dest
         li      $a0, 5
         li      $a1, 5
         jal     goto_loc
+        jal     wait_until_at_dest
         li      $a0, 9
         li      $a1, 9
         jal     goto_loc
@@ -124,14 +128,14 @@ goto_loc:
         # calculate dx and dy
         sub     $sp, $sp, 12
         sw      $ra, 0($sp)
-        sw      $s0, 4($sp)
-        sw      $s1, 8($sp)
+        sw      $s0, 4($sp)             # target worldx
+        sw      $s1, 8($sp)             # target worldy
 
         # Convert from graph coords to world coords
         mul     $a0, $a0, 30
-        add     $a0, $a0, 15
+        add     $a0, $a0, 15            # worldx = 30*x + 15
         mul     $a1, $a1, 30
-        add     $a1, $a1, 15
+        add     $a1, $a1, 15            # worldy = 30*y + 15
 
         move    $s0, $a0
         move    $s1, $a1
@@ -146,22 +150,43 @@ goto_loc:
         sw      $v0, ANGLE
         li      $t0, 1
         sw      $t0, ANGLE_CONTROL
+        # set positive velocity
         li      $t0, 10
         sw      $t0, VELOCITY
-goto_loc_loop:
+        # set movement flag to true
+        la      $t3, moving
+        li      $t4, 1
+        sw      $t4, 0($t3)             # moving = 1
+
+        # calculate dist to destination
         lw      $t0, BOT_X
+        sub     $a0, $s0, $t0
         lw      $t1, BOT_Y
-        sub     $a0, $t0, $s0
-        sub     $a1, $t1, $s1
+        sub     $a1, $s1, $t1
         jal     euclidean_dist
-        li      $t0, 10
-        bgt     $v0, $t0, goto_loc_loop
-goto_loc_done:
-        sw      $0, VELOCITY
+        # calculate time to destination
+        lw      $t0, TIMER
+        mul     $t1, $v0, 1000  # at velocity = 10, speed is 1000 cycles / distance unit
+        add     $t1, $t1, $t0
+        sw      $t1, TIMER      # set timer interupt for when we will arrive
+
+        # clean up
         lw      $ra, 0($sp)
         lw      $s0, 4($sp)
         lw      $s1, 8($sp)
         add     $sp, $sp, 12
+        jr      $ra
+
+# -----------------------------------------------------------------------
+# wait_until_at_dest - causes spimbot to wait until it has stopped moving
+# -----------------------------------------------------------------------
+wait_until_at_dest:
+        la      $t0, moving
+wait_until_dest_loop:
+        lw      $t1, 0($t0)
+        beq     $t1, 0, wait_until_dest_done
+        j       wait_until_at_dest
+wait_until_dest_done:
         jr      $ra
 
 # -----------------------------------------------------------------------
@@ -728,6 +753,8 @@ interrupt_handler:
 interrupt_dispatch:
         mfc0    $k0, $13
         beq     $k0, 0, done
+        and     $a0, $k0, TIMER_MASK                    # Is there a timer?
+        bne     $a0, 0, timer_interupt
         and     $a0, $k0, REQUEST_PUZZLE_INT_MASK       # Is there a puzzle?
         bne     $a0, 0, request_puzzle_interupt
         j       done
@@ -736,6 +763,13 @@ request_puzzle_interupt:
         la      $a1, puzzle_available
         li      $a0, 1
         sw      $a0, 0($a1)     # puzzle_available = 1
+        j       interrupt_dispatch
+# Timer interrupts occur when we have arrived at a destination
+timer_interupt:
+        sw      $a1, TIMER_ACK
+        la      $a1, moving
+        sw      $0, 0($a1)
+        sw      $0, VELOCITY
         j       interrupt_dispatch
 done:
         la      $k0, chunkIH

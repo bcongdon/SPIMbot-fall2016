@@ -49,42 +49,52 @@ REQUEST_PUZZLE_INT_MASK = 0x800
 
 .data
 # data things go here
+.align 4
 three:  .float  3.0
 five:   .float  5.0
 PI:     .float  3.141592
 F180:   .float  180.0
 
 .align 4
-puzzle_available:       .word   0
+puzzle_available_flag:  .word   0
 moving:                 .word   0
 
-.align 2
-tile_data:      .space 1600
-puzzle:         .space 4096
-solution:       .space 328
+.align 4
+tile_data:              .space 1600
+puzzle_data:            .space 4096
+solution_data:          .space 328
 
 .text
 main:
 	# go wild
         # enable interrupts
+        li      $a0, 0
+        li      $a1, 0
+        jal     goto_loc
+
         jal     zero_sol
+
+        # setup interrupts
         li      $t0, REQUEST_PUZZLE_INT_MASK
         or      $t0, $t0, TIMER_MASK
         or      $t0, $t0, 1
         mtc0    $t0, $12
-        la      $t0, puzzle
-        sw      $t0, REQUEST_PUZZLE
-        jal     solve_puzzle
         li      $t1, 0
         sw      $t1, SET_RESOURCE_TYPE
-        la      $t0, solution
+
+main_puzzle_loop:
+        la      $t0, puzzle_data
+        sw      $t0, REQUEST_PUZZLE
+        jal     solve_puzzle
+        
+        la      $t0, solution_data
         sw      $t0, SUBMIT_SOLUTION
+        jal     zero_sol
+
+        j       main_puzzle_loop
 
 	# the world is your oyster :)
-        jal     zero_sol
-        li      $a0, 0
-        li      $a1, 0
-        jal     goto_loc
+        
         jal     wait_until_at_dest
         li      $a0, 8
         li      $a1, 0
@@ -102,17 +112,18 @@ loop:
 
 
 solve_puzzle:
-        la      $t0, puzzle_available
+        la      $t0, puzzle_available_flag
         sub     $sp, $sp, 4
         sw      $ra, 0($sp)
 puzzle_wait:
         lw      $t1, 0($t0)
-        bne     $t1, 0, puzzle_ready
+        bne     $t1, 0, puzzle_available_flag
         j       puzzle_wait
 puzzle_ready:
-        la      $a0, solution
-        la      $a1, puzzle
+        la      $a0, solution_data
+        la      $a1, puzzle_data
         jal     recursive_backtracking
+        sw      $0, puzzle_available_flag       # puzzle_available_flag = 0
         lw      $ra, 0($sp)
         add     $sp, $sp, 4
         jr      $ra
@@ -193,7 +204,7 @@ wait_until_dest_done:
 # zero_sol - zeros out the solution data space
 # -----------------------------------------------------------------------
 zero_sol:
-        la      $t0, solution
+        la      $t0, solution_data
         li      $t1, 328
         add     $t1, $t1, $t0           # Final Address
 zero_sol_loop:
@@ -760,9 +771,8 @@ interrupt_dispatch:
         j       done
 request_puzzle_interupt:
         sw      $a1, REQUEST_PUZZLE_ACK # ack interrupt
-        la      $a1, puzzle_available
         li      $a0, 1
-        sw      $a0, 0($a1)     # puzzle_available = 1
+        sw      $a0, puzzle_available_flag     # puzzle_available_flag = 1
         j       interrupt_dispatch
 # Timer interrupts occur when we have arrived at a destination
 timer_interupt:

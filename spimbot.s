@@ -48,9 +48,9 @@ REQUEST_PUZZLE_ACK      = 0xffff00d8
 REQUEST_PUZZLE_INT_MASK = 0x800
 
 # logic constants
-DESIRED_NUM_PLANTS = 5
+DESIRED_NUM_PLANTS = 2
 DESIRED_NUM_SEEDS  = 3
-DESIRED_NUM_WATER  = 30
+DESIRED_NUM_WATER  = 100
 DESIRED_NUM_FIRE_STARTERS = 1
 
 .data
@@ -114,6 +114,7 @@ main_logic_loop:
         beq     $t0, $t1, no_tiles_burning                      # Skip firefighting if unnecessary
         # handle burning tile
         jal     put_out_first_fire
+        j       main_logic_loop
 no_tiles_burning:
         # Check if any tiles max_growth
         lw      $t0, max_growth_q_end
@@ -121,17 +122,24 @@ no_tiles_burning:
         beq     $t0, $t1, no_tiles_max_growth
         # handle max growth tiles
         jal     harvest_first_plant
+        j       main_logic_loop
 no_tiles_max_growth:
         # Check if should plant more
         jal     count_plants
         bge     $v0, DESIRED_NUM_PLANTS, plant_needs_satisfied  # Skip planting if happy with num of plants
         # handle planting more plants
         jal     plant_a_new_location
+        j       main_logic_loop
 plant_needs_satisfied:
         # Check if can burn enemy tiles
         jal     get_enemy_tile
         beq     $v0, 0xffffffff, burning_needs_satisfied        # Skip burning if no tiles available
+        # Handle going to burn tile
+        move    $a0, $v0
+        jal     go_do_arson
+        j       main_logic_loop
 burning_needs_satisfied:
+        li      $a0, 0xffffffff
         jal     get_resource
         j       main_logic_loop
 
@@ -168,7 +176,22 @@ burning_needs_satisfied:
 get_resource:
         beq     $a0, 0xffffffff, gr_pick_resource         # if resource unspecified, do priority picking
         move    $t1, $a0
-        j       gr_do_puzzle
+        # If resource specified, check if we actually need it
+        beq     $t1, 0, check_actually_need_water
+        beq     $t1, 1, check_actually_need_seed
+        beq     $t1, 2, check_actually_need_fire
+check_actually_need_water:
+        lw      $t3, GET_NUM_WATER_DROPS
+        blt     $t3, DESIRED_NUM_WATER, gr_do_puzzle
+        jr      $ra
+check_actually_need_seed:
+        lw      $t3, GET_NUM_SEEDS
+        blt     $t3, DESIRED_NUM_SEEDS, gr_do_puzzle
+        jr      $ra
+check_actually_need_fire:
+        lw      $t3, GET_NUM_FIRE_STARTERS
+        blt     $t3, DESIRED_NUM_FIRE_STARTERS, gr_do_puzzle
+        jr      $ra
 gr_pick_resource:
         lw      $t0, GET_NUM_WATER_DROPS
         bge     $t0, DESIRED_NUM_WATER, gr_not_water
@@ -195,6 +218,25 @@ gr_do_puzzle:
         add     $sp, $sp, 4
         jr      $ra
 
+# -----------------------------------------------------------------------
+# go_do_arson - go burn a specified tile
+# a0 - tile to go burn
+# -----------------------------------------------------------------------
+go_do_arson:
+        sub     $sp, $sp, 4
+        sw      $ra, 0($sp)
+        move    $t0, $a0
+        and     $a1, $t0, 0xffff        # a0 = x
+        srl     $a0, $t0, 16            # a1 = y
+        jal     goto_loc                # start movement to arson location
+        la      $a0, 3                  # do a get resource for fire starter
+        jal     get_resource
+        jal     wait_until_at_dest
+        sw      $0, BURN_TILE           # start a fire!
+gda_done:
+        lw      $ra, 0($sp)
+        add     $sp, $sp, 4  
+        jr      $ra
 # -----------------------------------------------------------------------
 # put_out_first_fire - puts out first fire in queue
 # -----------------------------------------------------------------------
@@ -269,8 +311,8 @@ plant_a_new_location:
 
         lw      $t0, TIMER
         div     $a0, $t0, 7
-        rem     $a0, $a0, 10
-        rem     $a1, $t0, 10
+        rem     $a0, $a0, 5
+        rem     $a1, $t0, 5
 
         jal     goto_loc
         la      $a0, 1
@@ -316,7 +358,28 @@ cp_done:
 # returns closest enemy tile, 0xffffffff if no tiles to burn
 # -----------------------------------------------------------------------
 get_enemy_tile:
-        # TODO
+        # Do tile scan
+        la      $t2, tile_data
+        sw      $t2, TILE_SCAN          # request a tile scan
+        add     $t1, $t2, 1600          # final address
+        li      $v0, 0xffffffff         # default to having no enemy tile
+        li      $t0, 0
+get_loop:
+        bge     $t2, $t1, get_done
+        lw      $t3, 0($t2)                     # tiles[tile_index].state
+        bne     $t3, 1, get_loop_continue       # skip if not growing
+        lw      $t3, 4($t2)                     # tiles[tile_index].owning_bot
+        bne     $t3, 1, get_loop_continue       # skip if owned by us
+        div     $t4, $t0, 10                    # y = t4
+        rem     $t5, $t0, 10                    # x = t5
+        sll     $v0, $t5, 16
+        or      $v0, $v0, $t4
+        jr      $ra                             # return x, y of enemy tile
+get_loop_continue:
+        add     $t2, $t2, 32            # increment pointer
+        add     $t0, $t0, 1             # increment counter
+        j       get_loop
+get_done:
         li      $v0, 0xffffffff
         jr      $ra
 
@@ -1046,10 +1109,13 @@ max_growth_interrupt:
 on_fire_interrupt:
         sw      $a1, ON_FIRE_ACK
         lw      $a0, GET_FIRE_LOC
+        bne     $a0, 0xffffffff, legitimate_fire_interupt       # don't save illegitimate fire interrupts
+        j       interrupt_dispatch
+legitimate_fire_interupt:
         lw      $a1, fire_q_end
         sw      $a0, 0($a1)             # store location to queue
         add     $a1, $a1, 32
-        sw      $a1, max_growth_q_end   # increment queue end pointer
+        sw      $a1, fire_q_end   # increment queue end pointer
         j       interrupt_dispatch
 done:
         la      $k0, chunkIH

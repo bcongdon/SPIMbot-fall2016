@@ -91,8 +91,6 @@ main_puzzle_loop:
         sw      $t0, SUBMIT_SOLUTION
         jal     zero_sol
 
-        j       main_puzzle_loop
-
 	# the world is your oyster :)
         
         jal     wait_until_at_dest
@@ -108,7 +106,7 @@ main_puzzle_loop:
         li      $a1, 9
         jal     goto_loc
 loop:
-	j	loop
+        j main_puzzle_loop
 
 
 solve_puzzle:
@@ -117,7 +115,7 @@ solve_puzzle:
         sw      $ra, 0($sp)
 puzzle_wait:
         lw      $t1, 0($t0)
-        bne     $t1, 0, puzzle_available_flag
+        bne     $t1, 0, puzzle_ready
         j       puzzle_wait
 puzzle_ready:
         la      $a0, solution_data
@@ -786,6 +784,6 @@ done:
         lw      $a0, 0($k0)
         lw      $a1, 4($k0)
 .set noat
-        move $at, $k1
+        move    $at, $k1
 .set at
         eret

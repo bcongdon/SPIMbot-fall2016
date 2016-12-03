@@ -47,6 +47,12 @@ MAX_GROWTH_INT_MASK     = 0x2000
 REQUEST_PUZZLE_ACK      = 0xffff00d8
 REQUEST_PUZZLE_INT_MASK = 0x800
 
+# logic constants
+DESIRED_NUM_PLANTS = 5
+DESIRED_NUM_SEEDS  = 3
+DESIRED_NUM_WATER  = 30
+DESIRED_NUM_FIRE_STARTERS = 1
+
 .data
 # data things go here
 .align 4
@@ -57,6 +63,7 @@ F180:   .float  180.0
 
 .align 4
 puzzle_available_flag:  .word   0
+puzzle_requested_flag:  .word   0
 moving:                 .word   0
 
 .align 4
@@ -64,34 +71,74 @@ tile_data:              .space 1600
 puzzle_data:            .space 4096
 solution_data:          .space 328
 
+fire_queue:          .space 4000
+fire_q_begin:        .word  0
+fire_q_end:          .word  0
+
+max_growth_queue:       .space 4000
+max_growth_q_begin:     .word  0
+max_growth_q_end:       .word  0
+
 .text
 main:
-	# go wild
-        # enable interrupts
-        li      $a0, 0
-        li      $a1, 0
-        jal     goto_loc
+        # stop initial velocity
+        sw      $0, VELOCITY
 
-        jal     zero_sol
+        # setup data queues
+        la      $t0, fire_queue
+        sw      $t0, fire_q_begin
+        sw      $t0, fire_q_end
+
+        la      $t0, max_growth_queue
+        sw      $t0, max_growth_q_begin
+        sw      $t0, max_growth_q_end
 
         # setup interrupts
         li      $t0, REQUEST_PUZZLE_INT_MASK
         or      $t0, $t0, TIMER_MASK
+        or      $t0, $t0, MAX_GROWTH_INT_MASK
+        or      $t0, $t0, ON_FIRE_MASK
         or      $t0, $t0, 1
         mtc0    $t0, $12
-        li      $t1, 0
-        sw      $t1, SET_RESOURCE_TYPE
 
-main_puzzle_loop:
+main_logic_loop:
+        # Do a tile scan
+        la      $t0, tile_data
+        sw      $t0, TILE_SCAN
+        # Check if any tiles burning
+        lw      $t0, fire_q_end
+        lw      $t1, fire_q_begin
+        beq     $t0, $t1, no_tiles_burning                      # Skip firefighting if unnecessary
+        # handle burning tiles
+        # TODO
+no_tiles_burning:
+        # Check if any tiles max_growth
+        lw      $t0, max_growth_q_end
+        lw      $t1, max_growth_q_begin
+        beq     $t0, $t1, no_tiles_max_growth
+        # handle max growth tiles
+        # TODO
+no_tiles_max_growth:
+        # Check if should plant more
+        jal     count_plants
+        bge     $v0, DESIRED_NUM_PLANTS, plant_needs_satisfied  # Skip planting if happy with num of plants
+        # handle planting more plants
+        # TODO
+plant_needs_satisfied:
+        # Check if can burn enemy tiles
+        jal     get_enemy_tile
+        beq     $v0, 0xffffffff, burning_needs_satisfied        # Skip burning if no tiles available
+burning_needs_satisfied:
+        jal     get_resource
+        j       main_logic_loop
+
+        # Random test movement
         la      $t0, puzzle_data
         sw      $t0, REQUEST_PUZZLE
         jal     solve_puzzle
         
-        la      $t0, solution_data
-        sw      $t0, SUBMIT_SOLUTION
+        
         jal     zero_sol
-
-	# the world is your oyster :)
         
         jal     wait_until_at_dest
         li      $a0, 8
@@ -105,11 +152,93 @@ main_puzzle_loop:
         li      $a0, 9
         li      $a1, 9
         jal     goto_loc
-loop:
-        j main_puzzle_loop
+        j       main_logic_loop
+
+# -----------------------------------------------------------------------
+# get_resource - get the number of currently owned plants
+# $a0 - specific resource to get (0, 1, or 2)
+#     - if set to 0xffffffff, will get resource most needed by priority
+#     - if all needs satisfied, will return without doing a puzzle
+# -----------------------------------------------------------------------
+# $t1 - used to eventually specify resource
+# -----------------------------------------------------------------------
+get_resource:
+        beq     $a0, 0xffffffff, gr_pick_resource         # if resource unspecified, do priority picking
+        move    $t1, $a0
+        j       gr_do_puzzle
+gr_pick_resource:
+        lw      $t0, GET_NUM_WATER_DROPS
+        bge     $t0, DESIRED_NUM_WATER, gr_not_water
+        li      $t1, 0
+        j       gr_do_puzzle
+gr_not_water:
+        lw      $t0, GET_NUM_SEEDS
+        bge     $t0, DESIRED_NUM_SEEDS, gr_not_seeds
+        li      $t0, 1 
+        j       gr_do_puzzle
+gr_not_seeds:
+        lw      $t0, GET_NUM_FIRE_STARTERS
+        bge     $t0, DESIRED_NUM_FIRE_STARTERS, gr_no_resources_needed
+        li      $t1, 2
+        j       gr_do_puzzle
+gr_no_resources_needed:
+        jr      $ra
+gr_do_puzzle:
+        sw      $t1, SET_RESOURCE_TYPE
+        sub     $sp, $sp, 4
+        sw      $ra, 0($sp)
+        jal     solve_puzzle
+        lw      $ra, 0($sp)
+        add     $sp, $sp, 4
+        jr      $ra
 
 
+# -----------------------------------------------------------------------
+# count_plants - get the number of currently owned plants
+# returns number of plants
+# -----------------------------------------------------------------------
+count_plants:
+        # TODO
+        li      $v0, 0
+        jr      $ra
+
+# -----------------------------------------------------------------------
+# get_enemy_tile - gets the closest enemy tile to burn
+# returns closest enemy tile; 0xffffffff if no tiles to burn
+# -----------------------------------------------------------------------
+get_enemy_tile:
+        # TODO
+        li      $v0, 0xffffffff
+        jr      $ra
+
+# -----------------------------------------------------------------------
+# request_puzzle - requests a puzzle
+# be careful not to request a new puzzle before solving old one
+# -----------------------------------------------------------------------
+request_puzzle:
+        la      $t0, puzzle_data
+        sw      $t0, REQUEST_PUZZLE
+        li      $t1, 1
+        sw      $t1, puzzle_requested_flag
+        jr      $ra
+
+# -----------------------------------------------------------------------
+# solve_puzzle - synchronously solves 1 puzzle (doesn't return until
+#                puzzle is solved)
+#              - requests puzzle if not already done so
+#              - submits puzzle once done 
+#              - zeros out solution once done
+# -----------------------------------------------------------------------
 solve_puzzle:
+        lw      $t0, puzzle_requested_flag
+        bne     $t0, 0, sp_already_requested
+        # Request puzzle if necessary
+        sub     $sp, $sp, 4
+        sw      $ra, 0($sp)
+        jal     request_puzzle
+        lw      $ra, 0($sp)
+        add     $sp, $sp, 4
+sp_already_requested:
         la      $t0, puzzle_available_flag
         sub     $sp, $sp, 4
         sw      $ra, 0($sp)
@@ -122,6 +251,10 @@ puzzle_ready:
         la      $a1, puzzle_data
         jal     recursive_backtracking
         sw      $0, puzzle_available_flag       # puzzle_available_flag = 0
+        sw      $0, puzzle_requested_flag       # puzzle_requested_flag = 0
+        la      $a0, solution_data
+        sw      $a0, SUBMIT_SOLUTION            # submit solution
+        jal     zero_sol                        # zero out solution
         lw      $ra, 0($sp)
         add     $sp, $sp, 4
         jr      $ra
@@ -748,7 +881,7 @@ gdfs_loop_end:
 
 .kdata
 .align 4
-chunkIH:        .space 8        #space for 2 registers
+chunkIH:        .space 12           # space for 3 registers
 
 .ktext 0x80000180
 interrupt_handler:
@@ -758,31 +891,58 @@ interrupt_handler:
         la      $k0, chunkIH
         sw      $a0, 0($k0)
         sw      $a1, 4($k0)
+        sw      $a1, 8($k0)
 
 interrupt_dispatch:
         mfc0    $k0, $13
         beq     $k0, 0, done
+
         and     $a0, $k0, TIMER_MASK                    # Is there a timer?
-        bne     $a0, 0, timer_interupt
+        bne     $a0, 0, timer_interrupt
+
         and     $a0, $k0, REQUEST_PUZZLE_INT_MASK       # Is there a puzzle?
-        bne     $a0, 0, request_puzzle_interupt
+        bne     $a0, 0, request_puzzle_interrupt
+
+        and     $a0, $k0, MAX_GROWTH_INT_MASK           # Is there a max growth?
+        bne     $a0, 0, max_growth_interrupt
+
+        and     $a0, $k0, ON_FIRE_MASK                  # Is there a fire?
+        bne     $a0, 0, on_fire_interrupt
+
         j       done
-request_puzzle_interupt:
+request_puzzle_interrupt:
         sw      $a1, REQUEST_PUZZLE_ACK # ack interrupt
         li      $a0, 1
         sw      $a0, puzzle_available_flag     # puzzle_available_flag = 1
         j       interrupt_dispatch
 # Timer interrupts occur when we have arrived at a destination
-timer_interupt:
+timer_interrupt:
         sw      $a1, TIMER_ACK
         la      $a1, moving
         sw      $0, 0($a1)
         sw      $0, VELOCITY
         j       interrupt_dispatch
+max_growth_interrupt:
+        sw      $a1, MAX_GROWTH_ACK     # ack growth
+        lw      $a0, MAX_GROWTH_TILE    # load max_growth location
+        lw      $a1, max_growth_q_end   
+        sw      $a0, 0($a1)             # store location to queue
+        add     $a1, $a1, 4
+        sw      $a1, max_growth_q_end   # increment queue end pointer
+        j       interrupt_dispatch
+on_fire_interrupt:
+        sw      $a1, ON_FIRE_ACK
+        lw      $a0, GET_FIRE_LOC
+        lw      $a1, fire_q_end
+        sw      $a0, 0($a1)             # store location to queue
+        add     $a1, $a1, 4
+        sw      $a1, max_growth_q_end   # increment queue end pointer
+        j       interrupt_dispatch
 done:
         la      $k0, chunkIH
         lw      $a0, 0($k0)
         lw      $a1, 4($k0)
+        lw      $a2, 8($k0)
 .set noat
         move    $at, $k1
 .set at

@@ -120,7 +120,7 @@ no_tiles_burning:
         lw      $t1, max_growth_q_begin
         beq     $t0, $t1, no_tiles_max_growth
         # handle max growth tiles
-        # TODO
+        jal     harvest_first_plant
 no_tiles_max_growth:
         # Check if should plant more
         jal     count_plants
@@ -204,11 +204,11 @@ put_out_first_fire:
 
         # get first fire location
         lw      $t0, fire_q_begin
-        add     $t0, $t0, 4
-        sw      $t0, fire_q_begin       # increment fire queue begin pointer
+        add     $t1, $t0, 32
+        sw      $t1, fire_q_begin       # increment fire queue begin pointer
         lw      $t0, 0($t0)             # t0 = fire location
-        and     $a0, $t0, 0xffff        # a0 = x
-        srl     $a1, $t0, 16            # a1 = y
+        and     $a1, $t0, 0xffff        # a0 = x
+        srl     $a0, $t0, 16            # a1 = y
 
         # check to see tile is owned by us
         # calculate index to tile
@@ -234,6 +234,30 @@ put_out_first_fire:
 poff_done:
         lw      $ra, 0($sp)
         add     $sp, $sp, 4        
+        jr      $ra
+
+# -----------------------------------------------------------------------
+# harvest_first_plant - harvests first plant in max_growth_queue
+# -----------------------------------------------------------------------
+harvest_first_plant:
+        sub     $sp, $sp, 4
+        sw      $ra, 0($sp)
+
+        lw      $t0, max_growth_q_begin
+        add     $t1, $t0, 32
+        lw      $t0, 0($t0)
+        sw      $t1, max_growth_q_begin # increment max growth queue begin pointer
+        and     $a1, $t0, 0xffff        # a0 = x
+        srl     $a0, $t0, 16            # a1 = y
+
+        jal     goto_loc                # start going to harvest
+        la      $a0, 0xffffffff         # don't specify resource preference
+        jal     get_resource            # do a resource get on the way
+        jal     wait_until_at_dest
+        sw      $0, HARVEST_TILE        # harvest tile
+hfp_done:
+        lw      $ra, 0($sp)
+        add     $sp, $sp, 4
         jr      $ra
 
 # -----------------------------------------------------------------------
@@ -1016,7 +1040,7 @@ max_growth_interrupt:
         lw      $a0, MAX_GROWTH_TILE    # load max_growth location
         lw      $a1, max_growth_q_end   
         sw      $a0, 0($a1)             # store location to queue
-        add     $a1, $a1, 4
+        add     $a1, $a1, 32
         sw      $a1, max_growth_q_end   # increment queue end pointer
         j       interrupt_dispatch
 on_fire_interrupt:
@@ -1024,7 +1048,7 @@ on_fire_interrupt:
         lw      $a0, GET_FIRE_LOC
         lw      $a1, fire_q_end
         sw      $a0, 0($a1)             # store location to queue
-        add     $a1, $a1, 4
+        add     $a1, $a1, 32
         sw      $a1, max_growth_q_end   # increment queue end pointer
         j       interrupt_dispatch
 done:

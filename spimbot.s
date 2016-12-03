@@ -47,58 +47,374 @@ MAX_GROWTH_INT_MASK     = 0x2000
 REQUEST_PUZZLE_ACK      = 0xffff00d8
 REQUEST_PUZZLE_INT_MASK = 0x800
 
+# logic constants
+DESIRED_NUM_PLANTS = 2
+DESIRED_NUM_SEEDS  = 3
+DESIRED_NUM_WATER  = 100
+DESIRED_NUM_FIRE_STARTERS = 1
+
 .data
 # data things go here
+.align 4
 three:  .float  3.0
 five:   .float  5.0
 PI:     .float  3.141592
 F180:   .float  180.0
 
 .align 4
-puzzle_available:       .word   0
+puzzle_available_flag:  .word   0
+puzzle_requested_flag:  .word   0
 moving:                 .word   0
 
-.align 2
-tile_data:      .space 1600
-puzzle:         .space 4096
-solution:       .space 328
+.align 4
+tile_data:              .space 1600
+puzzle_data:            .space 4096
+solution_data:          .space 328
+
+fire_queue:          .space 4000
+fire_q_begin:        .word  0
+fire_q_end:          .word  0
+
+max_growth_queue:       .space 4000
+max_growth_q_begin:     .word  0
+max_growth_q_end:       .word  0
 
 .text
 main:
-	# go wild
-        # enable interrupts
-        jal     zero_sol
+        # stop initial velocity
+        sw      $0, VELOCITY
+
+        # setup data queues
+        la      $t0, fire_queue
+        sw      $t0, fire_q_begin
+        sw      $t0, fire_q_end
+
+        la      $t0, max_growth_queue
+        sw      $t0, max_growth_q_begin
+        sw      $t0, max_growth_q_end
+
+        # setup interrupts
         li      $t0, REQUEST_PUZZLE_INT_MASK
+        or      $t0, $t0, TIMER_MASK
+        or      $t0, $t0, MAX_GROWTH_INT_MASK
+        or      $t0, $t0, ON_FIRE_MASK
         or      $t0, $t0, 1
         mtc0    $t0, $12
-        la      $t0, puzzle
+
+        # immediately request a puzzle
+        jal     request_puzzle
+
+main_logic_loop:
+        # Do a tile scan
+        la      $t0, tile_data
+        sw      $t0, TILE_SCAN
+        # Check if any tiles burning
+        lw      $t0, fire_q_end
+        lw      $t1, fire_q_begin
+        beq     $t0, $t1, no_tiles_burning                      # Skip firefighting if unnecessary
+        # handle burning tile
+        jal     put_out_first_fire
+        j       main_logic_loop
+no_tiles_burning:
+        # Check if any tiles max_growth
+        lw      $t0, max_growth_q_end
+        lw      $t1, max_growth_q_begin
+        beq     $t0, $t1, no_tiles_max_growth
+        # handle max growth tiles
+        jal     harvest_first_plant
+        j       main_logic_loop
+no_tiles_max_growth:
+        # Check if should plant more
+        jal     count_plants
+        bge     $v0, DESIRED_NUM_PLANTS, plant_needs_satisfied  # Skip planting if happy with num of plants
+        # handle planting more plants
+        jal     plant_a_new_location
+        j       main_logic_loop
+plant_needs_satisfied:
+        # Check if can burn enemy tiles
+        jal     get_enemy_tile
+        beq     $v0, 0xffffffff, burning_needs_satisfied        # Skip burning if no tiles available
+        # Handle going to burn tile
+        move    $a0, $v0
+        jal     go_do_arson
+        j       main_logic_loop
+burning_needs_satisfied:
+        li      $a0, 0xffffffff
+        jal     get_resource
+        j       main_logic_loop
+
+        # Random test movement
+        la      $t0, puzzle_data
         sw      $t0, REQUEST_PUZZLE
         jal     solve_puzzle
-        li      $t1, 0
-        sw      $t1, SET_RESOURCE_TYPE
-        la      $t0, solution
-        sw      $t0, SUBMIT_SOLUTION
-
-	# the world is your oyster :)
+        
+        
         jal     zero_sol
-        li      $a0, 0
-        li      $a1, 0
-        jal     goto_loc
+        
+        jal     wait_until_at_dest
         li      $a0, 8
         li      $a1, 0
         jal     goto_loc
+        jal     wait_until_at_dest
         li      $a0, 5
         li      $a1, 5
         jal     goto_loc
+        jal     wait_until_at_dest
         li      $a0, 9
         li      $a1, 9
         jal     goto_loc
-loop:
-	j	loop
+        j       main_logic_loop
+
+# -----------------------------------------------------------------------
+# get_resource - get the number of currently owned plants
+# $a0 - specific resource to get (0, 1, or 2)
+#     - if set to 0xffffffff, will get resource most needed by priority
+#     - if all needs satisfied, will return without doing a puzzle
+# -----------------------------------------------------------------------
+# $t1 - used to eventually specify resource
+# -----------------------------------------------------------------------
+get_resource:
+        beq     $a0, 0xffffffff, gr_pick_resource         # if resource unspecified, do priority picking
+        move    $t1, $a0
+        # If resource specified, check if we actually need it
+        beq     $t1, 0, check_actually_need_water
+        beq     $t1, 1, check_actually_need_seed
+        beq     $t1, 2, check_actually_need_fire
+check_actually_need_water:
+        lw      $t3, GET_NUM_WATER_DROPS
+        blt     $t3, DESIRED_NUM_WATER, gr_do_puzzle
+        jr      $ra
+check_actually_need_seed:
+        lw      $t3, GET_NUM_SEEDS
+        blt     $t3, DESIRED_NUM_SEEDS, gr_do_puzzle
+        jr      $ra
+check_actually_need_fire:
+        lw      $t3, GET_NUM_FIRE_STARTERS
+        blt     $t3, DESIRED_NUM_FIRE_STARTERS, gr_do_puzzle
+        jr      $ra
+gr_pick_resource:
+        lw      $t0, GET_NUM_WATER_DROPS
+        bge     $t0, DESIRED_NUM_WATER, gr_not_water
+        li      $t1, 0
+        j       gr_do_puzzle
+gr_not_water:
+        lw      $t0, GET_NUM_SEEDS
+        bge     $t0, DESIRED_NUM_SEEDS, gr_not_seeds
+        li      $t1, 1 
+        j       gr_do_puzzle
+gr_not_seeds:
+        lw      $t0, GET_NUM_FIRE_STARTERS
+        bge     $t0, DESIRED_NUM_FIRE_STARTERS, gr_no_resources_needed
+        li      $t1, 2
+        j       gr_do_puzzle
+gr_no_resources_needed:
+        jr      $ra
+gr_do_puzzle:
+        sw      $t1, SET_RESOURCE_TYPE
+        sub     $sp, $sp, 4
+        sw      $ra, 0($sp)
+        jal     solve_puzzle
+        lw      $ra, 0($sp)
+        add     $sp, $sp, 4
+        jr      $ra
+
+# -----------------------------------------------------------------------
+# go_do_arson - go burn a specified tile
+# a0 - tile to go burn
+# -----------------------------------------------------------------------
+go_do_arson:
+        sub     $sp, $sp, 4
+        sw      $ra, 0($sp)
+        move    $t0, $a0
+        and     $a1, $t0, 0xffff        # a0 = x
+        srl     $a0, $t0, 16            # a1 = y
+        jal     goto_loc                # start movement to arson location
+        la      $a0, 3                  # do a get resource for fire starter
+        jal     get_resource
+        jal     wait_until_at_dest
+        sw      $0, BURN_TILE           # start a fire!
+gda_done:
+        lw      $ra, 0($sp)
+        add     $sp, $sp, 4  
+        jr      $ra
+# -----------------------------------------------------------------------
+# put_out_first_fire - puts out first fire in queue
+# -----------------------------------------------------------------------
+put_out_first_fire:
+        sub     $sp, $sp, 4
+        sw      $ra, 0($sp)
+
+        # get first fire location
+        lw      $t0, fire_q_begin
+        add     $t1, $t0, 32
+        sw      $t1, fire_q_begin       # increment fire queue begin pointer
+        lw      $t0, 0($t0)             # t0 = fire location
+        and     $a1, $t0, 0xffff        # a0 = x
+        srl     $a0, $t0, 16            # a1 = y
+
+        # check to see tile is owned by us
+        # calculate index to tile
+        mul     $t1, $a1, 10
+        add     $t1, $t1, $a0           # t1 = tile offset
+        # Do tile scan
+        la      $t2, tile_data
+        sw      $t2, TILE_SCAN          # request a tile scan
+        # lookup owner of fire tile
+        mul     $t3, $t1, 32            # offset to tiles[tile_index]
+        add     $t3, $t3, $t2           # &tiles[tile_index]
+        lw      $t3, 4($t3)             # t3 = tiles[tile_index].owning_bot
+        # bail if we don't done the on-fire tile
+        bne     $t3, 0, poff_done
+
+        # proceed to put out fire
+        jal     goto_loc                # start moving to fire location
+        li      $a0, 0                  # resource to get is water
+        jal     get_resource
+        jal     wait_until_at_dest
+        sw      $0, PUT_OUT_FIRE        # put out fire at location
+
+poff_done:
+        lw      $ra, 0($sp)
+        add     $sp, $sp, 4        
+        jr      $ra
+
+# -----------------------------------------------------------------------
+# harvest_first_plant - harvests first plant in max_growth_queue
+# -----------------------------------------------------------------------
+harvest_first_plant:
+        sub     $sp, $sp, 4
+        sw      $ra, 0($sp)
+
+        lw      $t0, max_growth_q_begin
+        add     $t1, $t0, 32
+        lw      $t0, 0($t0)
+        sw      $t1, max_growth_q_begin # increment max growth queue begin pointer
+        and     $a1, $t0, 0xffff        # a0 = x
+        srl     $a0, $t0, 16            # a1 = y
+
+        jal     goto_loc                # start going to harvest
+        la      $a0, 0xffffffff         # don't specify resource preference
+        jal     get_resource            # do a resource get on the way
+        jal     wait_until_at_dest
+        sw      $0, HARVEST_TILE        # harvest tile
+hfp_done:
+        lw      $ra, 0($sp)
+        add     $sp, $sp, 4
+        jr      $ra
+
+# -----------------------------------------------------------------------
+# plant_a_new_location - selects location and plants a seed
+# -----------------------------------------------------------------------
+plant_a_new_location:
+        sub     $sp, $sp, 4
+        sw      $ra, 0($sp)
+
+        lw      $t0, TIMER
+        div     $a0, $t0, 7
+        rem     $a0, $a0, 5
+        rem     $a1, $t0, 5
+
+        jal     goto_loc
+        la      $a0, 1
+        jal     get_resource            # get a seed on the way
+        la      $a0, 0
+        jal     get_resource            # get water too
+        jal     wait_until_at_dest
+        sw      $0, SEED_TILE
+        li      $t0, 10
+        sw      $t0, WATER_TILE         # water new plant
+        lw      $ra, 0($sp)
+        add     $sp, $sp, 4
+        jr      $ra
 
 
+# -----------------------------------------------------------------------
+# count_plants - get the number of currently owned plants
+# returns number of plants
+# -----------------------------------------------------------------------
+count_plants:
+        # Do tile scan
+        la      $t2, tile_data
+        sw      $t2, TILE_SCAN          # request a tile scan
+        add     $t1, $t2, 1600          # final address
+        li      $t7, 0                  # t7 = plant_count
+cp_loop:
+        bge     $t2, $t1, cp_done
+        lw      $t3, 0($t2)                     # tiles[tile_index].state
+        bne     $t3, 1, cp_loop_continue        # skip if not growing
+        lw      $t3, 4($t2)                     # tiles[tile_index].owning_bot
+        bne     $t3, 0, cp_loop_continue        # skip it not owned by us
+        add     $t7, $t7, 1                     # plant_count ++
+        j       cp_loop_continue
+cp_loop_continue:
+        add     $t2, $t2, 32            # increment pointer
+        j       cp_loop
+cp_done:
+        move    $v0, $t7                # return plant_count
+        jr      $ra
+
+# -----------------------------------------------------------------------
+# get_enemy_tile - gets the closest enemy tile to burn
+# returns closest enemy tile, 0xffffffff if no tiles to burn
+# -----------------------------------------------------------------------
+get_enemy_tile:
+        # Do tile scan
+        la      $t2, tile_data
+        sw      $t2, TILE_SCAN          # request a tile scan
+        add     $t1, $t2, 1600          # final address
+        li      $v0, 0xffffffff         # default to having no enemy tile
+        li      $t0, 0
+get_loop:
+        bge     $t2, $t1, get_done
+        lw      $t3, 0($t2)                     # tiles[tile_index].state
+        bne     $t3, 1, get_loop_continue       # skip if not growing
+        lw      $t3, 4($t2)                     # tiles[tile_index].owning_bot
+        bne     $t3, 1, get_loop_continue       # skip if owned by us
+        div     $t4, $t0, 10                    # y = t4
+        rem     $t5, $t0, 10                    # x = t5
+        sll     $v0, $t5, 16
+        or      $v0, $v0, $t4
+        jr      $ra                             # return x, y of enemy tile
+get_loop_continue:
+        add     $t2, $t2, 32            # increment pointer
+        add     $t0, $t0, 1             # increment counter
+        j       get_loop
+get_done:
+        li      $v0, 0xffffffff
+        jr      $ra
+
+# -----------------------------------------------------------------------
+# request_puzzle - requests a puzzle
+# be careful not to request a new puzzle before solving old one
+# -----------------------------------------------------------------------
+request_puzzle:
+        lw      $t0, puzzle_requested_flag
+        bne     $t0, $0, rp_done                # skip request if a puzzle has already been requested
+        la      $t0, puzzle_data
+        sw      $t0, REQUEST_PUZZLE
+        li      $t1, 1
+        sw      $t1, puzzle_requested_flag
+rp_done:
+        jr      $ra
+
+# -----------------------------------------------------------------------
+# solve_puzzle - synchronously solves 1 puzzle (doesn't return until
+#                puzzle is solved)
+#              - requests puzzle if not already done so
+#              - submits puzzle once done 
+#              - zeros out solution once done
+# -----------------------------------------------------------------------
 solve_puzzle:
-        la      $t0, puzzle_available
+        lw      $t0, puzzle_requested_flag
+        bne     $t0, 0, sp_already_requested
+        # Request puzzle if necessary
+        sub     $sp, $sp, 4
+        sw      $ra, 0($sp)
+        jal     request_puzzle
+        lw      $ra, 0($sp)
+        add     $sp, $sp, 4
+sp_already_requested:
+        la      $t0, puzzle_available_flag
         sub     $sp, $sp, 4
         sw      $ra, 0($sp)
 puzzle_wait:
@@ -106,9 +422,15 @@ puzzle_wait:
         bne     $t1, 0, puzzle_ready
         j       puzzle_wait
 puzzle_ready:
-        la      $a0, solution
-        la      $a1, puzzle
+        la      $a0, solution_data
+        la      $a1, puzzle_data
         jal     recursive_backtracking
+        sw      $0, puzzle_available_flag       # puzzle_available_flag = 0
+        sw      $0, puzzle_requested_flag       # puzzle_requested_flag = 0
+        la      $a0, solution_data
+        sw      $a0, SUBMIT_SOLUTION            # submit solution
+        jal     zero_sol                        # zero out solution
+        jal     request_puzzle                  # immediately requst another puzzle
         lw      $ra, 0($sp)
         add     $sp, $sp, 4
         jr      $ra
@@ -124,14 +446,14 @@ goto_loc:
         # calculate dx and dy
         sub     $sp, $sp, 12
         sw      $ra, 0($sp)
-        sw      $s0, 4($sp)
-        sw      $s1, 8($sp)
+        sw      $s0, 4($sp)             # target worldx
+        sw      $s1, 8($sp)             # target worldy
 
         # Convert from graph coords to world coords
         mul     $a0, $a0, 30
-        add     $a0, $a0, 15
+        add     $a0, $a0, 15            # worldx = 30*x + 15
         mul     $a1, $a1, 30
-        add     $a1, $a1, 15
+        add     $a1, $a1, 15            # worldy = 30*y + 15
 
         move    $s0, $a0
         move    $s1, $a1
@@ -146,18 +468,27 @@ goto_loc:
         sw      $v0, ANGLE
         li      $t0, 1
         sw      $t0, ANGLE_CONTROL
+        # set positive velocity
         li      $t0, 10
         sw      $t0, VELOCITY
-goto_loc_loop:
+        # set movement flag to true
+        la      $t3, moving
+        li      $t4, 1
+        sw      $t4, 0($t3)             # moving = 1
+
+        # calculate dist to destination
         lw      $t0, BOT_X
+        sub     $a0, $s0, $t0
         lw      $t1, BOT_Y
-        sub     $a0, $t0, $s0
-        sub     $a1, $t1, $s1
+        sub     $a1, $s1, $t1
         jal     euclidean_dist
-        li      $t0, 10
-        bgt     $v0, $t0, goto_loc_loop
-goto_loc_done:
-        sw      $0, VELOCITY
+        # calculate time to destination
+        lw      $t0, TIMER
+        mul     $t1, $v0, 1000  # at velocity = 10, speed is 1000 cycles / distance unit
+        add     $t1, $t1, $t0
+        sw      $t1, TIMER      # set timer interupt for when we will arrive
+
+        # clean up
         lw      $ra, 0($sp)
         lw      $s0, 4($sp)
         lw      $s1, 8($sp)
@@ -165,10 +496,22 @@ goto_loc_done:
         jr      $ra
 
 # -----------------------------------------------------------------------
+# wait_until_at_dest - causes spimbot to wait until it has stopped moving
+# -----------------------------------------------------------------------
+wait_until_at_dest:
+        la      $t0, moving
+wait_until_dest_loop:
+        lw      $t1, 0($t0)
+        beq     $t1, 0, wait_until_dest_done
+        j       wait_until_at_dest
+wait_until_dest_done:
+        jr      $ra
+
+# -----------------------------------------------------------------------
 # zero_sol - zeros out the solution data space
 # -----------------------------------------------------------------------
 zero_sol:
-        la      $t0, solution
+        la      $t0, solution_data
         li      $t1, 328
         add     $t1, $t1, $t0           # Final Address
 zero_sol_loop:
@@ -714,7 +1057,7 @@ gdfs_loop_end:
 
 .kdata
 .align 4
-chunkIH:        .space 8        #space for 2 registers
+chunkIH:        .space 12           # space for 3 registers
 
 .ktext 0x80000180
 interrupt_handler:
@@ -724,24 +1067,62 @@ interrupt_handler:
         la      $k0, chunkIH
         sw      $a0, 0($k0)
         sw      $a1, 4($k0)
+        sw      $a1, 8($k0)
 
 interrupt_dispatch:
         mfc0    $k0, $13
         beq     $k0, 0, done
+
+        and     $a0, $k0, TIMER_MASK                    # Is there a timer?
+        bne     $a0, 0, timer_interrupt
+
         and     $a0, $k0, REQUEST_PUZZLE_INT_MASK       # Is there a puzzle?
-        bne     $a0, 0, request_puzzle_interupt
+        bne     $a0, 0, request_puzzle_interrupt
+
+        and     $a0, $k0, MAX_GROWTH_INT_MASK           # Is there a max growth?
+        bne     $a0, 0, max_growth_interrupt
+
+        and     $a0, $k0, ON_FIRE_MASK                  # Is there a fire?
+        bne     $a0, 0, on_fire_interrupt
+
         j       done
-request_puzzle_interupt:
+request_puzzle_interrupt:
         sw      $a1, REQUEST_PUZZLE_ACK # ack interrupt
-        la      $a1, puzzle_available
         li      $a0, 1
-        sw      $a0, 0($a1)     # puzzle_available = 1
+        sw      $a0, puzzle_available_flag     # puzzle_available_flag = 1
+        j       interrupt_dispatch
+# Timer interrupts occur when we have arrived at a destination
+timer_interrupt:
+        sw      $a1, TIMER_ACK
+        la      $a1, moving
+        sw      $0, 0($a1)
+        sw      $0, VELOCITY
+        j       interrupt_dispatch
+max_growth_interrupt:
+        sw      $a1, MAX_GROWTH_ACK     # ack growth
+        lw      $a0, MAX_GROWTH_TILE    # load max_growth location
+        lw      $a1, max_growth_q_end   
+        sw      $a0, 0($a1)             # store location to queue
+        add     $a1, $a1, 32
+        sw      $a1, max_growth_q_end   # increment queue end pointer
+        j       interrupt_dispatch
+on_fire_interrupt:
+        sw      $a1, ON_FIRE_ACK
+        lw      $a0, GET_FIRE_LOC
+        bne     $a0, 0xffffffff, legitimate_fire_interupt       # don't save illegitimate fire interrupts
+        j       interrupt_dispatch
+legitimate_fire_interupt:
+        lw      $a1, fire_q_end
+        sw      $a0, 0($a1)             # store location to queue
+        add     $a1, $a1, 32
+        sw      $a1, fire_q_end   # increment queue end pointer
         j       interrupt_dispatch
 done:
         la      $k0, chunkIH
         lw      $a0, 0($k0)
         lw      $a1, 4($k0)
+        lw      $a2, 8($k0)
 .set noat
-        move $at, $k1
+        move    $at, $k1
 .set at
         eret

@@ -101,6 +101,9 @@ main:
         or      $t0, $t0, 1
         mtc0    $t0, $12
 
+        # immediately request a puzzle
+        jal     request_puzzle
+
 main_logic_loop:
         # Do a tile scan
         la      $t0, tile_data
@@ -109,8 +112,8 @@ main_logic_loop:
         lw      $t0, fire_q_end
         lw      $t1, fire_q_begin
         beq     $t0, $t1, no_tiles_burning                      # Skip firefighting if unnecessary
-        # handle burning tiles
-        # TODO
+        # handle burning tile
+        jal     put_out_first_fire
 no_tiles_burning:
         # Check if any tiles max_growth
         lw      $t0, max_growth_q_end
@@ -123,7 +126,7 @@ no_tiles_max_growth:
         jal     count_plants
         bge     $v0, DESIRED_NUM_PLANTS, plant_needs_satisfied  # Skip planting if happy with num of plants
         # handle planting more plants
-        # TODO
+        jal     plant_a_new_location
 plant_needs_satisfied:
         # Check if can burn enemy tiles
         jal     get_enemy_tile
@@ -174,7 +177,7 @@ gr_pick_resource:
 gr_not_water:
         lw      $t0, GET_NUM_SEEDS
         bge     $t0, DESIRED_NUM_SEEDS, gr_not_seeds
-        li      $t0, 1 
+        li      $t1, 1 
         j       gr_do_puzzle
 gr_not_seeds:
         lw      $t0, GET_NUM_FIRE_STARTERS
@@ -192,19 +195,101 @@ gr_do_puzzle:
         add     $sp, $sp, 4
         jr      $ra
 
+# -----------------------------------------------------------------------
+# put_out_first_fire - puts out first fire in queue
+# -----------------------------------------------------------------------
+put_out_first_fire:
+        sub     $sp, $sp, 4
+        sw      $ra, 0($sp)
+
+        # get first fire location
+        lw      $t0, fire_q_begin
+        add     $t0, $t0, 4
+        sw      $t0, fire_q_begin       # increment fire queue begin pointer
+        lw      $t0, 0($t0)             # t0 = fire location
+        and     $a0, $t0, 0xffff        # a0 = x
+        srl     $a1, $t0, 16            # a1 = y
+
+        # check to see tile is owned by us
+        # calculate index to tile
+        mul     $t1, $a1, 10
+        add     $t1, $t1, $a0           # t1 = tile offset
+        # Do tile scan
+        la      $t2, tile_data
+        sw      $t2, TILE_SCAN          # request a tile scan
+        # lookup owner of fire tile
+        mul     $t3, $t1, 32            # offset to tiles[tile_index]
+        add     $t3, $t3, $t2           # &tiles[tile_index]
+        lw      $t3, 4($t3)             # t3 = tiles[tile_index].owning_bot
+        # bail if we don't done the on-fire tile
+        bne     $t3, 0, poff_done
+
+        # proceed to put out fire
+        jal     goto_loc                # start moving to fire location
+        li      $a0, 0                  # resource to get is water
+        jal     get_resource
+        jal     wait_until_at_dest
+        sw      $0, PUT_OUT_FIRE        # put out fire at location
+
+poff_done:
+        lw      $ra, 0($sp)
+        add     $sp, $sp, 4        
+        jr      $ra
+
+# -----------------------------------------------------------------------
+# plant_a_new_location - selects location and plants a seed
+# -----------------------------------------------------------------------
+plant_a_new_location:
+        sub     $sp, $sp, 4
+        sw      $ra, 0($sp)
+
+        lw      $t0, TIMER
+        div     $a0, $t0, 7
+        rem     $a0, $a0, 10
+        rem     $a1, $t0, 10
+
+        jal     goto_loc
+        la      $a0, 1
+        jal     get_resource            # get a seed on the way
+        la      $a0, 0
+        jal     get_resource            # get water too
+        jal     wait_until_at_dest
+        sw      $0, SEED_TILE
+        li      $t0, 10
+        sw      $t0, WATER_TILE         # water new plant
+        lw      $ra, 0($sp)
+        add     $sp, $sp, 4
+        jr      $ra
+
 
 # -----------------------------------------------------------------------
 # count_plants - get the number of currently owned plants
 # returns number of plants
 # -----------------------------------------------------------------------
 count_plants:
-        # TODO
-        li      $v0, 0
+        # Do tile scan
+        la      $t2, tile_data
+        sw      $t2, TILE_SCAN          # request a tile scan
+        add     $t1, $t2, 1600          # final address
+        li      $t7, 0                  # t7 = plant_count
+cp_loop:
+        bge     $t2, $t1, cp_done
+        lw      $t3, 0($t2)                     # tiles[tile_index].state
+        bne     $t3, 1, cp_loop_continue        # skip if not growing
+        lw      $t3, 4($t2)                     # tiles[tile_index].owning_bot
+        bne     $t3, 0, cp_loop_continue        # skip it not owned by us
+        add     $t7, $t7, 1                     # plant_count ++
+        j       cp_loop_continue
+cp_loop_continue:
+        add     $t2, $t2, 32            # increment pointer
+        j       cp_loop
+cp_done:
+        move    $v0, $t7                # return plant_count
         jr      $ra
 
 # -----------------------------------------------------------------------
 # get_enemy_tile - gets the closest enemy tile to burn
-# returns closest enemy tile; 0xffffffff if no tiles to burn
+# returns closest enemy tile, 0xffffffff if no tiles to burn
 # -----------------------------------------------------------------------
 get_enemy_tile:
         # TODO
@@ -216,10 +301,13 @@ get_enemy_tile:
 # be careful not to request a new puzzle before solving old one
 # -----------------------------------------------------------------------
 request_puzzle:
+        lw      $t0, puzzle_requested_flag
+        bne     $t0, $0, rp_done                # skip request if a puzzle has already been requested
         la      $t0, puzzle_data
         sw      $t0, REQUEST_PUZZLE
         li      $t1, 1
         sw      $t1, puzzle_requested_flag
+rp_done:
         jr      $ra
 
 # -----------------------------------------------------------------------
@@ -255,6 +343,7 @@ puzzle_ready:
         la      $a0, solution_data
         sw      $a0, SUBMIT_SOLUTION            # submit solution
         jal     zero_sol                        # zero out solution
+        jal     request_puzzle                  # immediately requst another puzzle
         lw      $ra, 0($sp)
         add     $sp, $sp, 4
         jr      $ra

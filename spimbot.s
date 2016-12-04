@@ -136,8 +136,8 @@ plant_needs_satisfied:
         jal     go_do_arson
         j       main_logic_loop
 burning_needs_satisfied:
-        li      $a0, 0xffffffff
-        #jal     get_resource
+        # when in doubt, go plant more
+        jal     plant_a_new_location
         j       main_logic_loop
 
 # -----------------------------------------------------------------------
@@ -344,7 +344,7 @@ cp_done:
         jr      $ra
 
 # -----------------------------------------------------------------------
-# get_enemy_tile - gets the closest enemy tile to burn
+# get_enemy_tile - gets a random enemy tile to burn
 # returns closest enemy tile, 0xffffffff if no tiles to burn
 # -----------------------------------------------------------------------
 get_enemy_tile:
@@ -352,22 +352,45 @@ get_enemy_tile:
         la      $t2, tile_data
         sw      $t2, TILE_SCAN          # request a tile scan
         add     $t1, $t2, 1600          # final address
+        li      $t0, 0                  # tile_index counter
+        li      $t7, 0                  # num_enemy_tiles
+        # count number of enemy tiles
+get_enemy_num_tiles_loop:
+        bge     $t2, $t1, get_enemy_random_tile
+        lw      $t3, 0($t2)                     # tiles[tile_index].state
+        bne     $t3, 1, get_enemy_num_tiles_continue       # skip if not growing
+        lw      $t3, 4($t2)                     # tiles[tile_index].owning_bot
+        beq     $t3, 0, get_enemy_num_tiles_continue       # skip if owned by us
+        add     $t7, $t7, 1                     # found 1 enemy tile
+get_enemy_num_tiles_continue:
+        add     $t2, $t2, 16            # increment pointer
+        add     $t0, $t0, 1             # increment counter
+        j       get_enemy_num_tiles_loop
+get_enemy_random_tile:
+        beq     $t7, 0, get_done        # bail if no enemy tiles found
+        # pick a random-ish enemy tile
+        lw      $t6, TIMER
+        rem     $t6, $t6, $t7           # timer % num_enemy_tiles
+        # get that random enemy tile
+        la      $t2, tile_data
         li      $t0, 0
-get_loop:
+get_enemy_random_tile_loop:
         bge     $t2, $t1, get_done
         lw      $t3, 0($t2)                     # tiles[tile_index].state
-        bne     $t3, 1, get_loop_continue       # skip if not growing
+        bne     $t3, 1, get_enemy_random_tile_continue       # skip if not growing
         lw      $t3, 4($t2)                     # tiles[tile_index].owning_bot
-        beq     $t3, 0, get_loop_continue       # skip if owned by us
+        beq     $t3, 0, get_enemy_random_tile_continue       # skip if owned by us
+        sub     $t6, $t6, 1                     # num_tiles_until_one_we_want --
+        bgt     $t6, 0, get_enemy_random_tile_continue        # still need to keep looking
         div     $t4, $t0, 10                    # y = t4
         rem     $t5, $t0, 10                    # x = t5
         sll     $v0, $t5, 16
         or      $v0, $v0, $t4
-        jr      $ra                             # return x, y of enemy tile
-get_loop_continue:
-        add     $t2, $t2, 16            # increment pointer
-        add     $t0, $t0, 1             # increment counter
-        j       get_loop
+        jr      $ra                             # return x, y of random enemy tile
+get_enemy_random_tile_continue:
+        add     $t2, $t2, 16
+        add     $t0, $t0, 1
+        j       get_enemy_random_tile_loop
 get_done:
         li      $v0, 0xffffffff         # default to having no enemy tile
         jr      $ra

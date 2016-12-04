@@ -48,10 +48,10 @@ REQUEST_PUZZLE_ACK      = 0xffff00d8
 REQUEST_PUZZLE_INT_MASK = 0x800
 
 # logic constants
-DESIRED_NUM_PLANTS = 1
+DESIRED_NUM_PLANTS = 3
 DESIRED_NUM_SEEDS  = 3
 DESIRED_NUM_WATER  = 100
-DESIRED_NUM_FIRE_STARTERS = 1
+DESIRED_NUM_FIRE_STARTERS = 2
 
 .data
 # data things go here
@@ -137,7 +137,7 @@ plant_needs_satisfied:
         j       main_logic_loop
 burning_needs_satisfied:
         li      $a0, 0xffffffff
-        jal     get_resource
+        #jal     get_resource
         j       main_logic_loop
 
 # -----------------------------------------------------------------------
@@ -203,8 +203,8 @@ go_do_arson:
         sw      $s0, 4($sp)
         sw      $s1, 8($sp)
         move    $t0, $a0
-        and     $a1, $t0, 0xffff        # a0 = x
-        srl     $a0, $t0, 16            # a1 = y
+        and     $a1, $t0, 0xffff        # a1 = y
+        srl     $a0, $t0, 16            # a0 = x
         move    $s0, $a0
         move    $s1, $a1
         jal     goto_loc                # start movement to arson location
@@ -216,7 +216,7 @@ go_do_arson:
         sw      $t0, TILE_SCAN
         mul     $t1, $s1, 10            # t1 = tile_index
         add     $t1, $t1, $s0
-        mul     $t1, $t1, 32
+        mul     $t1, $t1, 16
         add     $t1, $t1, $t0           # &tiles[tile_index]
         lw      $t2, 0($t1)             # tiles[tile_index].state
         beq     $t2, 0, gda_done        # abort if no longer a growing tile
@@ -337,7 +337,7 @@ cp_loop:
         add     $t7, $t7, 1                     # plant_count ++
         j       cp_loop_continue
 cp_loop_continue:
-        add     $t2, $t2, 32            # increment pointer
+        add     $t2, $t2, 16            # increment pointer
         j       cp_loop
 cp_done:
         move    $v0, $t7                # return plant_count
@@ -365,7 +365,7 @@ get_loop:
         or      $v0, $v0, $t4
         jr      $ra                             # return x, y of enemy tile
 get_loop_continue:
-        add     $t2, $t2, 32            # increment pointer
+        add     $t2, $t2, 16            # increment pointer
         add     $t0, $t0, 1             # increment counter
         j       get_loop
 get_done:

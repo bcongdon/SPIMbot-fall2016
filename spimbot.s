@@ -48,7 +48,7 @@ REQUEST_PUZZLE_ACK      = 0xffff00d8
 REQUEST_PUZZLE_INT_MASK = 0x800
 
 # logic constants
-DESIRED_NUM_PLANTS = 2
+DESIRED_NUM_PLANTS = 1
 DESIRED_NUM_SEEDS  = 3
 DESIRED_NUM_WATER  = 100
 DESIRED_NUM_FIRE_STARTERS = 1
@@ -101,9 +101,6 @@ main:
         or      $t0, $t0, 1
         mtc0    $t0, $12
 
-        # immediately request a puzzle
-        jal     request_puzzle
-
 main_logic_loop:
         # Do a tile scan
         la      $t0, tile_data
@@ -141,28 +138,6 @@ plant_needs_satisfied:
 burning_needs_satisfied:
         li      $a0, 0xffffffff
         jal     get_resource
-        j       main_logic_loop
-
-        # Random test movement
-        la      $t0, puzzle_data
-        sw      $t0, REQUEST_PUZZLE
-        jal     solve_puzzle
-        
-        
-        jal     zero_sol
-        
-        jal     wait_until_at_dest
-        li      $a0, 8
-        li      $a1, 0
-        jal     goto_loc
-        jal     wait_until_at_dest
-        li      $a0, 5
-        li      $a1, 5
-        jal     goto_loc
-        jal     wait_until_at_dest
-        li      $a0, 9
-        li      $a1, 9
-        jal     goto_loc
         j       main_logic_loop
 
 # -----------------------------------------------------------------------
@@ -223,19 +198,34 @@ gr_do_puzzle:
 # a0 - tile to go burn
 # -----------------------------------------------------------------------
 go_do_arson:
-        sub     $sp, $sp, 4
+        sub     $sp, $sp, 12
         sw      $ra, 0($sp)
+        sw      $s0, 4($sp)
+        sw      $s1, 8($sp)
         move    $t0, $a0
         and     $a1, $t0, 0xffff        # a0 = x
         srl     $a0, $t0, 16            # a1 = y
+        move    $s0, $a0
+        move    $s1, $a1
         jal     goto_loc                # start movement to arson location
         la      $a0, 3                  # do a get resource for fire starter
         jal     get_resource
         jal     wait_until_at_dest
+        # double check arson is valid
+        la      $t0, tile_data
+        sw      $t0, TILE_SCAN
+        mul     $t1, $s1, 10            # t1 = tile_index
+        add     $t1, $t1, $s0
+        mul     $t1, $t1, 32
+        add     $t1, $t1, $t0           # &tiles[tile_index]
+        lw      $t2, 0($t1)             # tiles[tile_index].state
+        beq     $t2, 0, gda_done        # abort if no longer a growing tile
         sw      $0, BURN_TILE           # start a fire!
 gda_done:
         lw      $ra, 0($sp)
-        add     $sp, $sp, 4  
+        lw      $s0, 4($sp)
+        lw      $s1, 8($sp)
+        add     $sp, $sp, 12
         jr      $ra
 # -----------------------------------------------------------------------
 # put_out_first_fire - puts out first fire in queue
@@ -311,8 +301,8 @@ plant_a_new_location:
 
         lw      $t0, TIMER
         div     $a0, $t0, 7
-        rem     $a0, $a0, 5
-        rem     $a1, $t0, 5
+        rem     $a0, $a0, 10
+        rem     $a1, $t0, 10
 
         jal     goto_loc
         la      $a0, 1
@@ -362,14 +352,13 @@ get_enemy_tile:
         la      $t2, tile_data
         sw      $t2, TILE_SCAN          # request a tile scan
         add     $t1, $t2, 1600          # final address
-        li      $v0, 0xffffffff         # default to having no enemy tile
         li      $t0, 0
 get_loop:
         bge     $t2, $t1, get_done
         lw      $t3, 0($t2)                     # tiles[tile_index].state
         bne     $t3, 1, get_loop_continue       # skip if not growing
         lw      $t3, 4($t2)                     # tiles[tile_index].owning_bot
-        bne     $t3, 1, get_loop_continue       # skip if owned by us
+        beq     $t3, 0, get_loop_continue       # skip if owned by us
         div     $t4, $t0, 10                    # y = t4
         rem     $t5, $t0, 10                    # x = t5
         sll     $v0, $t5, 16
@@ -380,7 +369,7 @@ get_loop_continue:
         add     $t0, $t0, 1             # increment counter
         j       get_loop
 get_done:
-        li      $v0, 0xffffffff
+        li      $v0, 0xffffffff         # default to having no enemy tile
         jr      $ra
 
 # -----------------------------------------------------------------------
@@ -430,7 +419,7 @@ puzzle_ready:
         la      $a0, solution_data
         sw      $a0, SUBMIT_SOLUTION            # submit solution
         jal     zero_sol                        # zero out solution
-        jal     request_puzzle                  # immediately requst another puzzle
+        #jal     request_puzzle                  # immediately requst another puzzle
         lw      $ra, 0($sp)
         add     $sp, $sp, 4
         jr      $ra

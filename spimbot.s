@@ -299,10 +299,28 @@ plant_a_new_location:
         sub     $sp, $sp, 4
         sw      $ra, 0($sp)
 
+select_location:
         lw      $t0, TIMER
         div     $a0, $t0, 7
         rem     $a0, $a0, 10
         rem     $a1, $t0, 10
+
+        # Select locations only on diagonals
+        mul     $t3, $a1, 10
+        add     $t3, $t3, $a0
+        div     $t0, $t3, 10
+        rem     $t1, $t3, 10            # t3 = tile_index
+        rem     $t0, $t0, 2
+        rem     $t1, $t1, 2
+        bne     $t0, $t1, select_location
+
+        la      $t1, tile_data
+        sw      $t1, TILE_SCAN
+        mul     $t3, $t3, 16
+        add     $t3, $t3, $t1           # &tiles[tile_index]
+        lw      $t4, 0($t3)             # tiles[tile_index].state
+        bne     $t4, 0, select_location # bail if something already growing at new loc
+
 
         jal     goto_loc
         la      $a0, 1

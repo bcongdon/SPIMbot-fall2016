@@ -11,4 +11,13 @@ Our SPIMBot has four priorities that it checks every time we get to the main log
 
 As far as acquiring resources, we try to do so during the travel time between places. For example, if we are traveling to put out a fire, the puzzle we solve along the way will  be used to request more water.
 
-However, we place boundaries on the number of units of each resource we'll keep, and if we have sufficient resources, we won't waste cycles on waiting for and solving a puzzle. 
+However, we place boundaries on the number of units of each resource we'll keep, and if we have sufficient resources, we won't waste cycles on waiting for and solving a puzzle.
+
+### Plant Location Selection:
+We utilize two schemes for choosing where to plant new seeds. For both schemes, we use the current TIMER cycle as a source of pseudo-randomness.
+
+The first approach is totally random, where we generate a random x/y coordinate at any place in the board; the second approach is an offset based approach, were we choose a random location within ~3 tiles in either direction of the current location.
+
+Both of these approaches generate a location which is 'checked' that 1) there isn't already a plant there and 2) the new location is on a 'diagonal'. Obviously, we can't plant on a tile that already has something on it, and we chose to only plant on diagonals so as to avoid fire spread.
+
+We again use the TIMER as a source of randomness to choose between these different approaches. 2/3 of the time, we choose based on offset; 1/3 of the time we choose randomly. This provides a good mix of locations, allowing for both close-together growing areas to maximize harvest, and spread-out growing areas to minimize the risk of enemy attack.

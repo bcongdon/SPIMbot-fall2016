@@ -1,0 +1,14 @@
+### Movement:
+We implemented an interrupt based movement system so that our SPIMBot could work on solving puzzles while it moved between locations. When the SPIMBot gets a movement command, it calculates the time it will take to reach the destination given the known velocity and distance, and requests an interrupt. On the interrupt, we stop the velocity of the bot so that no matter what it's currently working on, it will stop at the correct location.
+
+### Fire and Max Growth Queues:
+For both fire and max_growth interrupts, we implemented a queue system in our data segment so we can always collect the oldest outstanding events. For example, if we used a stack, we'd always respond to the newest fires, which would essentially surrender the older 'on fire' tiles to burning.
+
+We did this by keeping a large section of the data segment clear, and using start/end pointers to implement the queue.
+
+### Resource Prioritization:
+Our SPIMBot has four priorities that it checks every time we get to the main logic loop: Firefighting, Harvesting, Planting, and Burning - in that order. If the fire queue isn't empty, we put out fires; if the max_growth queue isn't empty, we go harvest the first one, and so on.
+
+As far as acquiring resources, we try to do so during the travel time between places. For example, if we are traveling to put out a fire, the puzzle we solve along the way will  be used to request more water.
+
+However, we place boundaries on the number of units of each resource we'll keep, and if we have sufficient resources, we won't waste cycles on waiting for and solving a puzzle. 

@@ -301,21 +301,47 @@ plant_a_new_location:
 
 select_location:
         lw      $t0, TIMER
-        div     $a0, $t0, 7
-        rem     $a0, $a0, 10
-        rem     $a1, $t0, 10
+        rem     $t0, $t0, 3
+        beq     $t0, 0, select_randomly         # select randomly 1/3 of the time
+        # select a nearby diagonal 2/3 of the time
 
+select_near_diagonal:
+        lw      $t0, TIMER
+        div     $t1, $t0, 7     # t0 is randomness of x, t1 is randomness for y
+        # calculate random offsets
+        rem     $t0, $t0, 5
+        sub     $t0, $t0, 2
+        rem     $t1, $t1, 5
+        sub     $t1, $t1, 2
+        # calculate current bot location
+        lw      $t3, BOT_X
+        lw      $t4, BOT_Y
+        div     $t3, $t3, 30
+        div     $t4, $t4, 30
+        add     $a0, $t3, $t0
+        add     $a1, $t4, $t1
+        j verify_new_location
+
+select_randomly:
+        lw      $t0, TIMER
+        div     $a0, $t0, 7
+        rem     $a0, $a0, 10            # a0 = new x loc
+        rem     $a1, $t0, 10            # a1 = new y loc
+
+verify_new_location:
         # Select locations only on diagonals
-        mul     $t3, $a1, 10
-        add     $t3, $t3, $a0
-        div     $t0, $t3, 10
-        rem     $t1, $t3, 10            # t3 = tile_index
-        rem     $t0, $t0, 2
-        rem     $t1, $t1, 2
+        rem     $t0, $a0, 2             # x_loc % 2
+        rem     $t1, $a1, 2             # 
         bne     $t0, $t1, select_location
 
         la      $t1, tile_data
         sw      $t1, TILE_SCAN
+        mul     $t3, $a1, 10
+        add     $t3, $t3, $a0           # t3 = tile_index
+
+        # bail on bad tile locations
+        blt     $t3, 0, select_location
+        bgt     $t3, 99, select_location
         mul     $t3, $t3, 16
         add     $t3, $t3, $t1           # &tiles[tile_index]
         lw      $t4, 0($t3)             # tiles[tile_index].state
